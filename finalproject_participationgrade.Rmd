@@ -1,0 +1,647 @@
+---
+title: "Final Project"
+author: "ParticipationGrade"
+date: "2022-12-02"
+output:
+  pdf_document: default
+  html_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+Revisions Summary:
+- Added new best subset model using a dummy variable for most and least expensive neighborhoods
+- Added new EDA plot to further explore relationship between price and continuous variables
+- Changed KNN regression k-fold CV to only use original train data in training
+- Added explanation of best subset regression choice
+- Removed train RMSE plots and code for best subset regression
+- Explained why we chose the four predictor model over the two predictor model for BSR
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, echo = FALSE)
+
+```
+
+Introduction:
+
+The main focus of our research was to determine if we could predict the price of
+houses in Kuala Lumpur given data from a Malaysian house listing website. The 
+dataset was taken from Kaggle, and was scraped directly from a real estate 
+website on a single (unspecified) day in 2019. The variables explored in this dataset 
+include the house location, furnishing status, size, number of rooms, car parks, 
+and bathrooms, the size of the house, as well as the kind of property. For our 
+analysis, we wanted to attempt to use two distinct methods of regression in order 
+to compare which predictors were most important in accurately predicting the 
+price of a house, and to analyze the differences in prediction accuracy between them.
+
+
+```{r}
+
+library(fastDummies)
+library(leaps)
+library(tidyverse)
+library(ggplot2)
+library(caret)
+```
+
+EDA:
+
+The dataset contains seven potential predictors which are as follows: Location, 
+Rooms, Bathrooms, Car.Parks, Property.Type, Size, and Furnishing, and one response
+variable of interest for our purposes: Price. Location specifies the neighborhood 
+and city of the listed house (all Kuala Lumpur), the Price variable gives the price in Malaysian ringgits, the Rooms variable gives the number of rooms in the house (sometimes given as an 
+expression and not a whole number), the Bathroom variable gives the number of 
+bathrooms, Car.Parks refers to the number of parking spots, Property.Type refers
+to the kind of property the house is listed as (condominium, etc.), Size is 
+given mostly in sq. ft., although also occasionally in acres and hectares, 
+and Furnishing gives the furnishing status at the time of listing (fully 
+furnished, partly furnished, etc.) To explore our dataset preliminarily we 
+examined the relationship between various features of the house listing and its 
+price, including number of rooms, location, and square footage.
+
+```{r}
+
+housing_data = read.csv("/Users/sophie/Desktop/Math0218/final-project-ParticipationGrade/data/data_kaggle.csv") 
+
+nbhd_df <- housing_data[rowSums(is.na(housing_data)) == 0,] %>% separate(Location, c("Neighborhood", "City"), sep= ",")
+
+avg_nbhd_price <- nbhd_df[c("Neighborhood", "Price")]
+avg_nbhd_price$Price <- as.numeric(gsub('R|M|,| ' , '', avg_nbhd_price$Price))
+
+avg_nbhd_price <- avg_nbhd_price %>%
+  na.omit() %>% 
+  group_by(Neighborhood) %>% 
+  summarise(mean_price = mean(Price), .groups = 'drop') %>%
+  as.data.frame()
+  
+ordered_avg_price <- avg_nbhd_price[order(-avg_nbhd_price$mean_price),]
+
+top10 <- ordered_avg_price[1:10,]
+
+bot10 <- ordered_avg_price[(nrow(avg_nbhd_price)-10):nrow(avg_nbhd_price),]
+
+
+plot <- ggplot(top10, aes(x = mean_price, y = Neighborhood)) + 
+  geom_bar(stat= "identity") +
+  ggtitle("Top 10 Most Expensive Neighborhoods")+
+  xlab("Mean Price")
+
+plot
+
+plot2 <- ggplot(bot10, aes(x = mean_price, y = Neighborhood)) + 
+  geom_bar(stat= "identity") +
+  ggtitle("Top 10 Least Expensive Neighborhoods")+
+  xlab("Mean Price")
+
+plot2
+
+```
+
+
+```{r}
+
+corrected_price_data <- separate(housing_data, Price, c("currency", "price"), sep=" ", extra = "drop")
+corrected_price_data <- corrected_price_data %>% 
+  mutate_all(na_if,"")
+#code to remove rows containing NA found from: https://stackoverflow.com/questions/6437164/removing-empty-rows-of-a-data-file-in-r
+corrected_price_data <- corrected_price_data[rowSums(is.na(corrected_price_data)) == 0,]
+
+# clean room column
+new_rooms <- corrected_price_data$Rooms
+new_rooms[new_rooms == "Studio"] <- "0.5"
+new_rooms[new_rooms == ""] <- "0.5"
+new_rooms[new_rooms == "6+"] <- "7"
+new_rooms[new_rooms == "7+"] <- "8"
+new_rooms[new_rooms == "8+"] <- "9"
+new_rooms[new_rooms == "10+"] <- "11"
+new_rooms[new_rooms == "12+"] <- "13"
+new_rooms[new_rooms == "13+"] <- "14"
+new_rooms[new_rooms == "15+"] <- "16"
+new_rooms[new_rooms == "20 Above"] <- "21"
+
+new_rooms <- lapply(new_rooms, function(x) eval(parse(text= x))) #it works here
+
+corrected_price_data$RoomNum = unlist(new_rooms)
+
+rooms_plot <- ggplot(corrected_price_data, aes(x=RoomNum, y=log(as.numeric(gsub("\\,", "",(price))))))+
+  geom_point()+
+  xlab("Number of Rooms")+
+  ylab("Log Price of Home")+
+  ggtitle("Number of Rooms in a Home versus Log Price of that Home")
+
+rooms_plot
+```
+
+```{r}
+#Oscar
+
+#read data
+data <- read.csv("/Users/sophie/Desktop/Math0218/final-project-ParticipationGrade/data/data_kaggle.csv")
+
+# clean the data
+# omit NA
+data = na.omit(data)
+
+
+# remove RM from price column & convert to number
+# convert to US dollars (0.23 USD = 1 RM)
+
+
+usd_price <- as.numeric(gsub('R|M|,| ' , '', data$Price)) * 0.23
+data$USPrice = usd_price
+
+# clean room column
+new_rooms <- data$Rooms
+new_rooms[new_rooms == "Studio"] <- "0.5"
+new_rooms[new_rooms == ""] <- "0.5"
+new_rooms[new_rooms == "6+"] <- "7"
+new_rooms[new_rooms == "7+"] <- "8"
+new_rooms[new_rooms == "8+"] <- "9"
+new_rooms[new_rooms == "10+"] <- "11"
+new_rooms[new_rooms == "12+"] <- "13"
+new_rooms[new_rooms == "13+"] <- "14"
+new_rooms[new_rooms == "15+"] <- "16"
+new_rooms[new_rooms == "20 Above"] <- "21"
+
+new_rooms <- lapply(new_rooms, function(x) eval(parse(text= x))) #it works here
+
+data$RoomNum = unlist(new_rooms)
+
+
+# split prefix and omit sq. ft and turn into number
+cleandata <- separate(data, Location, c("Neighborhood", "City"), sep= ",") %>% separate(., Size, c("SizeType", "SqFt"), sep= " : ")
+
+cleandata = subset(cleandata, select = -c(City, Price, Rooms))
+cleandata = na.omit(cleandata)
+
+
+footage <- gsub('`|ft.|sf|,| sq. ft.|sq.|m.', '', cleandata$SqFt)
+footage = gsub('x|X| x | X ', '*', footage)
+footage = gsub("\\([0-9|*]+\\)", '', footage)
+footage = gsub(' |[0-9]+~|[0-9]+-', '', footage)
+footage = gsub('CnerUni|t|wt|or|Kuala Luur|KualaLuur|Malaysia|corner', '', footage)
+footage = gsub('Corner Unit|Kuala Lumpur|Wilayah Persekutuan', '', footage)
+footage = gsub('WilayahPersekuuan|WP|unknown|nil|NA|N/A', '', footage)
+footage = gsub('55&#215;80|23&#215;100|22&#215;80|23&#215;75', '', footage) 
+footage = gsub('20&#215;80|20&#215;85|22&#215;100|\'|-| ', '', footage)
+footage = gsub('27\\*\\*', '', footage)
+footage = gsub('CnerUni', '', footage)
+
+footage <- lapply(footage, function(x) eval(parse(text= x)))
+#necessary to change null values in footage list to NA values to be able to 
+#convert to a vector
+footage <- as.numeric(as.character(footage))
+cleandata$SqFootage = unlist(footage)
+
+#cleandata = subset(cleandata, select = -c(SqFt))
+cleandata = cleandata[!(cleandata$SqFootage <= 100 | cleandata$SqFootage >= 8.401195e+06),]
+
+cleandata = na.omit(cleandata)
+```
+
+``` {r}
+# Additional EDA Graph
+
+addit_plot <- ggplot(cleandata, aes(x= log(SqFootage), y= log(USPrice))) +
+  geom_point() +
+  xlab("Log of Square Footage of Listing") +
+  ylab("Log of Housing Listing Price") +
+  ggtitle("Log Square Footage of a Listing vs. Its Log Price")
+
+  
+addit_plot
+```
+
+These graphs indicate that regressing on number of rooms alone may not be a very
+powerful predictor of price, as the same number of rooms, e.g. 3, can have an 
+incredibly low log price (close to 0), or a much higher log price (above 15). 
+Location on the other hand, seems to have a strong effect on house price. Given 
+our location plot we can also see that there may be potential outliers in this data set.
+The Neighborhood of Taman Duta has multiple, multi-billion dollar listings that 
+skew it to be far more expensive than all the other neighborhoods. We used the log
+of the home price as the response value of these plots in order to better standardize
+our data and see trends more clearly.
+
+The Log Square Footage vs. Log Price and the Room Number vs. Log Price 
+visualizations both show slight relationships between the two predicting 
+variables and the response variable of price, yet they also exhibit gaps which 
+could be better explained by using these predicting variables in conjunction 
+with one another and other predicting variables such as number of bathrooms and 
+number of parking spaces. We took the log value of the variables (SqFootage and 
+USPrice) which exhibited extremely wide ranges due to some outliers. These 
+outliers included large compounds and entire apartment buildings, which had 
+enormous prices and enormous square footage, and luxury million-dollar 
+apartments which were comprised of smaller square footage and large price 
+values, in order to get a clearer picture of the relationship between these 
+variables and the price of a listing.
+
+
+Methodology: 
+
+Cleaning Data - 
+First, we converted all of the housing prices from string representations of the
+price in RM currency to numerical values representing their USD prices. Then, we
+cleaned the awkward and sometimes typo-laden entries of the column representing 
+the number of rooms in a house listing. Some of the room number entries were 
+listed as expressions that had to be evaluated, such as "5+1" rooms, so to 
+remedy this, we converted strings to expressions and evaluated them using the 
+eval(parse()) function to convert them into numerical values that we could use 
+in a regression model. Then we cleaned the extremely inconsistent and often 
+erroneous variable representing the square footage of a listing. We had to 
+manually convert around 120 entries which were listed in acres rather than 
+sq. ft. Some entries didn't even have a numerical value and were rather 
+referencing an entire district or reference code, and so we assigned these 
+incorrect entries as NA values and removed them from the dataset. Finally, 
+we manually removed observations that were not caught previously by our many 
+cleaning techniques, which seemed to have square footages that were implausibly 
+small or large. The resulting dataset resides within the variable cleandata. 
+These values are now within the cleandata columns "USPrices", representing the 
+converted housing price; "RoomNum", representing the evaluated number of rooms 
+of a property; and "SqFootage", representing the evaluated square footage of a 
+listed property.
+
+Train & Test Split -
+We split our clean data into training and testing data sets for our model 
+generation. The training dataset contained 70% of the cleaned observations, or 
+24523 randomly selected rows of the cleaned data. The testing dataset consisted
+of all the rows not included in the training dataset. The data used in the
+K-fold cross validation for the KNN regression was taken from a 70-30 split of
+the already split train data.
+
+Best Subset Regression - 
+For our first method of regression, we chose to use best subset regression. 
+Best subset regression identifies and returns the best model of each predictor 
+size, in our case one predictor up to four predictors. We selected this method 
+as we thought it would be useful in answering our initial research question 
+about which predictors were important for predicting total price. Initially,
+we intended to use the categorical variables (Location, Property.Type, SizeType,
+and Furnishing) as well as continuous variables in our model creation, which
+would have lead to potential model sizes of one predictor up to ten predictors. 
+We successfully translated these variables into dummy variables using the 
+dummy_cols function from the R package fastDummies, however our computers were 
+not powerful enough to run that many resulting variables in a reasonable time 
+frame, and so categorical variables were excluded from further analysis. For 
+best subset regression, this left four potential predictors; Bathrooms, 
+Car.Parks, SqFootage, and RoomNum. We used the regsubsets function from the R 
+package leaps in order to construct the models, regressing the training data for
+USPrice on the four predictors. We then calculated the test root mean sure error, BIC, Cp, and adjusted R^2 values for each model size given the outputs of the predict.regsubset function found in
+Lab 04 Selection and the summary statistic of the model. All were then visualized in plots using the R package ggplot2.
+
+As part of our revision process we also included another round of best subset regression,
+with the intention of being able to use at least some of the categorical variables. For
+example, in our EDA, we found that Taman Duta was the most expensive neighborhood by a large
+margin. Therefore, when we run best subset regression on only a subset of the categorical
+variables, we figured that whether or not the listing was in Taman Duta would be a valuable
+predictor. Computationally we could include more than just the dummy variable for Taman Duta, but
+not the dummy variables for all neighborhoods. Since we are including the most expensive neighborhood 
+as a potential, and had power for another potential predictor, we  also decided to include 
+least expensive neighborhood as a dummy variable, which in this case is Chan Sow Lin.
+The final list of the 5 predictors used in this model were Bathrooms, SqFootage, RoomNum, Taman Duta (yes/no), and Chan Sow Lin (yes/no), which again is a rather small amount of variables to use
+with best subset prediction, but in order to be consistent with the already performed model, we
+still used best subset prediction with the understanding that it would most likely still 
+choose the model with all predictors. The dummy variable used to indicate the
+neighborhood was either a 1 (in Taman Duta or Chan Sow Lin) or a 0 (not in TD or CSL).
+
+K Nearest Neighbors Regression -
+We sought to compare the differences in accuracy between this method and the Best
+Subset Regression of 4 predictors. We used four predictors in our KNN model,
+as was determined most accurate by the Best Subset method. Using all four predictors, 
+RoomNum, SqFootage, Car.Parks, and Bathrooms, we sampled 40 values of K between 1 and 500 
+to test which K value would yield the lowest RMSE when used in a KNN regression model. 
+Our testing gave us the optimal neighbor set size which gives us the lowest RMSE
+within the training data of the model. Using this K value, we generated the most
+accurate KNN regression model using our four predictors to predict the USPrices 
+variable of our test data.
+
+Results:
+
+Best Subset Results -
+The R^2 adjusted for best subset selection was maximized at four predictors, 
+while the Cp and BIC values were minimized at 4 and 2 respectively. The test RMSE was
+minimized in a model with all four predictors. We chose 4 as the optimal model size.
+Given the already small amount of predictors we were working with we weren't concerned 
+about the possibility of overfitting resulting from a larger number of predictors, and 
+the CV test error, as well as the Cp value, was minimized at 4. The test RMSE at four predictors was 
+$350,985.22. The resulting model was:
+USPrice = -2.090762e+05 + 1.962128e+05 x Bathrooms + 1.127425e+05 x Car.Parks + 4.953569e+00 x SqFootage - 6.058989e+04 x RoomNum
+
+```{r}
+#Sophie
+set.seed(2)
+
+# split into train and test data
+n <- nrow(cleandata)
+train_size <- round(0.7*n, digits = 0)
+train_ids <- sample(1:n, train_size)
+
+train_data <- cleandata[train_ids,]
+test_data <- cleandata[-train_ids,]
+
+kval_train_size <- round(0.7*train_size, digits = 0)
+kval_train_ids <- sample(1:train_size, kval_train_size)
+kval_train_data <- train_data[kval_train_ids,]
+kval_test_data <- train_data[-kval_train_ids,]
+
+
+```
+
+
+```{r}
+#Sophie
+set.seed(2)
+
+# Best subset regression from X to X*4 using continuous variables (including dummy variables for
+# categorical variables required too much computational power)
+best_subset = regsubsets(USPrice ~ Bathrooms + Car.Parks + SqFootage + RoomNum, 
+                         data = train_data, nvmax = 4, really.big = F)
+
+# Pick best model based on BIC, CP, etc.
+subset_sum = summary(best_subset)
+
+subset_df <- data.frame(R2_adj = subset_sum$adjr2,
+                        Cp = subset_sum$cp, 
+                        BIC = subset_sum$bic) %>%
+                        mutate(num_pred = 1:4) 
+
+subset_graph <- subset_df %>%
+  pivot_longer(cols = 1:3, names_to = "statistic", values_to = "value") %>%
+  ggplot(., aes(x = num_pred, y = value)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~ statistic, scales = "free")+
+  ggtitle("BIC, CP, and Adj. R^2 Values for Best Subset Selection")+
+  xlab("Number of Predictors")+
+  ylab("Value")
+
+subset_graph
+
+
+R2_max <- which.max(subset_df$R2_adj)
+bic_cp_min <- apply(subset_df[, c(2,3)], 2, which.min)
+# show that R2_adj is maximized at 4, Cp is minimized at 4, and BIC is minimized
+# at 2.
+
+
+# Predict on test data
+
+# predict.regsubsets function taken from lab 4
+predict.regsubsets <- function(object, newdata, id, ...){
+  form <- as.formula(object$call[[2]])
+  X_mat <- model.matrix(form, newdata)
+  coefs <- coef(object, id = id)
+  xvars <- names(coefs)
+  X_mat[, xvars] %*% coefs
+}
+
+
+# retrieving test MSE for best subset
+mse_subset_test = c()
+
+for (i in 1:4) {
+  pred_t = predict.regsubsets(best_subset, test_data, i)
+  truval_t = test_data$USPrice
+  mse_subset_test = c(mse_subset_test, sqrt(mean((truval_t-pred_t)^2)))
+}
+
+mse_by_size_test = data.frame(1:4, mse_subset_test)
+
+mse_test_plot <- mse_by_size_test %>%
+  ggplot(aes(x=X1.4, y=mse_subset_test))+
+  labs(x="Number of Predictors", y="Best Subset Test RMSE")+
+  geom_point()+
+  geom_line()+
+  ggtitle("Best Subset Selection Test RMSE By Number of Predictors")
+
+mse_test_plot
+
+min_mse_subset <- min(mse_by_size_test$mse_subset_test)
+
+coef(best_subset, 4)
+
+# RMSE for best subset regression with four is $350985.22.
+
+#final model is USPrice = -2.090762e+05 + 1.962128e+05*Bathrooms + 1.127425e+05*Car.Parks +
+  # 4.953569e+00*SqFootage - 6.058989e+04 *RoomNum
+
+```
+
+The best subset model that included the two neighborhood predictors
+(Taman Duta & Chan Sow Lin) performed best, contrary to our initial thinking, at only 4 predictors, not all 5.
+The R^2 was maximized at 4 predictors, while the Cp and BIC values were minimized at 3 and 2 
+respectively. The test RMSE was minimzed at 4 predictors. These results obviously made it harder
+to select the best model size, as the various diagnostic parameters somewhat disagree. In the end,
+we chose the model with four predictors, since it minimizes both the test RMSE and the adjusted R^2
+value, and similarly to the previous model we were not overly concerned with the possibility of
+overfitting given we only had 5 potential predictors. The final test RMSE of the model with
+four predictors was $1,143,903.41. The final model given by this method was:
+USPrice = -1.526937e+05 + 2.118226e+05 x Bathrooms + 4.164160e+00 x SqFootage - 3.040803e+04 x RoomNum +
+4.724859e+07 x Taman Duta (1 = yes, 0 = no).
+
+```{r}
+
+# Create dummy variables of categorical variables
+dummy_data_train <- dummy_cols(train_data, select_columns = c("Neighborhood"))
+dummy_data_train <- subset(dummy_data_train, select = -c(Furnishing, SqFt))
+
+dummy_data_test <- dummy_cols(test_data, select_columns = c("Neighborhood"))
+dummy_data_test <- subset(dummy_data_test, select = -c(Furnishing, SqFt, Car.Parks, Property.Type, SizeType, Neighborhood))
+
+dummy_data_test = dummy_data_test %>%
+  rename(taman_duta = `Neighborhood_Taman Duta`) %>%
+  rename(chan_sow_lin = `Neighborhood_Chan Sow Lin`) 
+
+nbhd_subset_test <- subset(dummy_data_test, select = c('Bathrooms', 'SqFootage', 'RoomNum', 'USPrice', 'taman_duta', 'chan_sow_lin'))
+
+nbhd_subset <- subset(dummy_data_train, select = c('Bathrooms', 'SqFootage', 'RoomNum', 'USPrice', 'Neighborhood_Taman Duta', 'Neighborhood_Chan Sow Lin'))
+
+nbhd_subset = nbhd_subset %>%
+  rename(taman_duta = `Neighborhood_Taman Duta`) %>%
+  rename(chan_sow_lin = `Neighborhood_Chan Sow Lin`) 
+
+nbhd_bs = regsubsets(USPrice ~ Bathrooms + SqFootage + RoomNum + taman_duta + chan_sow_lin,
+                         data = nbhd_subset, nvmax = 5, really.big = F)
+
+nbhd_bs_sum = summary(nbhd_bs)
+
+nbhdbs_df <- data.frame(R2_adj = nbhd_bs_sum$adjr2,
+                        Cp = nbhd_bs_sum$cp, 
+                        BIC = nbhd_bs_sum$bic) %>%
+                        mutate(num = 1:5)
+
+nbhdbs_graph <- nbhdbs_df %>%
+  pivot_longer(cols = 1:3, names_to = "statistic", values_to = "value") %>%
+  ggplot(., aes(x = num, y = value)) +
+  geom_point() +
+  geom_line() +
+  facet_wrap(~ statistic, scales = "free")+
+  ggtitle("BIC, CP, and Adj. R^2 Values for Best Subset Selection w/ Neighborhood Predictors")+
+  xlab("Number of Predictors")+
+  ylab("Value")
+
+nbhdbs_graph
+
+R2_max_n <- which.max(nbhdbs_df$R2_adj)
+bic_cp_min_n <- apply(nbhdbs_df[, c(2,3)], 2, which.min)
+
+nbhd_mse = c()
+for (i in 1:5) {
+  pred = predict.regsubsets(nbhd_bs, nbhd_subset_test, i)
+  truval = nbhd_subset_test$USPrice
+  nbhd_mse = c(nbhd_mse, sqrt(mean((truval-pred)^2)))
+}
+
+nbhd_mse_by_size = data.frame(1:5, nbhd_mse)
+
+nbhd_mse_test_plot <- nbhd_mse_by_size %>%
+  ggplot(aes(x=X1.5, y=nbhd_mse))+
+  labs(x="Number of Predictors", y="Best Subset Test RMSE")+
+  geom_point()+
+  geom_line()+
+  ggtitle("Best Subset Selection w/ Neighborhoods Test RMSE By # of Predictors")
+
+nbhd_mse_test_plot
+
+nbhd_min_mse_subset <- min(nbhd_mse_by_size$nbhd_mse)
+
+coef(nbhd_bs, 4)
+
+```
+
+
+KNN Regression Results -
+Using all four predictors, as recommended by our Best Subset Selection model, we
+found that the optimal K value for a KNN regression model would be 449
+neighbors. This value of K gave us the lowest RMSE by a large margin. We then 
+created a KNN regression model that bases its decisions upon the 449 nearest 
+neighbors which predicted the prices of the house listings in our test data with 
+a RMSE of \$342,937.40, which was slightly lower than the RMSE of our Best Subset 
+Selection model.
+
+```{r}
+#Oscar
+set.seed(2)
+
+# knn regression using neighborhood, rooms, bathrooms, car parks, size, furnishing
+train_x <- train_data[, c("RoomNum", "Bathrooms", "Car.Parks", "SqFootage")]
+train_x = scale(train_x)
+train_y <- train_data$USPrice
+
+test_x <- test_data[, c("RoomNum", "Bathrooms", "Car.Parks", "SqFootage")]
+test_x = scale(test_x)
+test_y <- test_data$USPrice
+
+#kval selection splitting
+kval_train_x <- kval_train_data[, c("RoomNum", "Bathrooms", "Car.Parks", "SqFootage")]
+kval_train_x = scale(kval_train_x)
+kval_train_y <- kval_train_data$USPrice
+
+kval_test_x <- kval_test_data[, c("RoomNum", "Bathrooms", "Car.Parks", "SqFootage")]
+kval_test_x = scale(kval_test_x)
+kval_test_y <- kval_test_data$USPrice
+
+# making models to determine best k in range 1:40
+k <- sample(1:500, 40)
+knn_rmse_vec <- rep(NA, 40)
+
+for (i in 1:40) {
+  temp_knn <- knnreg(x= kval_train_x, y= kval_train_y, k= k[i])
+  temp_pred <- predict(temp_knn, data.frame(kval_test_x))
+  knn_rmse_vec[i] = sqrt(mean((kval_test_y - temp_pred)^2))
+}
+
+knn_rmse_plot <- data.frame(knn_rmse_vec, k)
+
+knn_rmse_plot %>% ggplot(., aes(x= k, y= knn_rmse_vec))+
+  labs(x="Number of Neighbors (K)", y="RMSE")+
+  geom_point()+
+  geom_line() +
+  ggtitle("Minimizing RMSE by K Value")
+
+# optimal k value is 449
+opt_k <- knn_rmse_plot$k[which.min(knn_rmse_vec)]
+paste("Optimal K value for KNN regression: ", opt_k)
+
+opt_knn <- knnreg(x= train_x, y= train_y, k= opt_k)
+pred_y <- predict(opt_knn, data.frame(test_x))
+opt_knn_rmse = sqrt(mean((test_y - pred_y)^2))
+opt_knn_rmse
+
+# opt knn rmse is $342,937.40
+paste("RMSE when K is 449: ", opt_knn_rmse)
+```
+
+Discussion:
+
+Using Subset Selection and K-Nearest-Neighbors, we were able to predict the 
+price of a house listing in Kuala Lumpur given its number of rooms, bathrooms, 
+parking spaces, and its square footage within a margin of error around \$360,000. 
+While this may seem like a large margin, it is helpful to note that 
+Kuala Lumpur, Malaysia has one of the most disparitous housing markets. It is 
+the most expensive real estate market out of any city in Malaysia, while 
+still encompassing districts that are essentially slums. The average house price 
+in 2020 was \$185,648 in the city, yet this data set also includes listings for entire 
+multi-building complexes that can easily reach up to billions of dollars in price.
+
+Subset Selection confirmed our hypothesis that all of the four predictors we were 
+testing would be useful in predicting the price of a house. This method's RMSE 
+was \$350,985.22. Using many KNN regression models and comparing their RMSE, we 
+identified that using a K value of 449 yielded the most accurate KNN regression 
+model. This optimal model was slightly more accurate than the Subset Selection 
+model, with a RMSE of \$342,937.40. Due to the very similar values of these 
+error margins, we suspect that this is near the accuracy limit of most 
+regression models using only these four predictors. 
+
+To critique our methodology, only using the quantitative variables of our data 
+in our models probably does not give us the most accurate price predictions.
+However, because of the size of our data set, we were limited to only using these
+quantitative variables due to the hundreds of different categorical data labels produced
+when trying to incorporate dummy variables. Also, it seems to us that 
+listings for entire apartment buildings and complexes should not be included in 
+a dataset of housing prices, and likely negatively affect the 
+accuracy of our overall price predictions. Removing these observations entirely from the 
+data set may improve overall confidence in our predictions. Another aspect of our methodology
+that was effected by our discovery that we did not have the power to run the quantitative
+variables was our choice to use best subset regression as a potential model. This model
+made a lot more sense when we were going to be choosing from potentially hundreds of
+variables (the original variables as well as the many, many dummy variables), but became
+less reasonable once we were limited to just four predictors anyways. Had we had more time
+to go back knowing we would only be able to use four predictors, we may have found more
+interesting conclusions using other methods such as a decision tree, which would have allowed
+us to analyze how consequential each of the four predictors may be.
+
+In the future, we could improve this investigation by utilizing the neighborhood
+variable as a predictor in our different models, as the neighborhood that a 
+house is in is usually a very large factor in the house's pricing, which we confirmed via
+our EDA. Unfortunately, we were both limited by computational power and patience within 
+this project, and were unable to configure the neighborhood variable in such a 
+way that our computers could create a model using it in under 4 hours. It would 
+not only be interesting to use such a variable in our predictive models, but it 
+may also be interesting to see how accurate a tree model would be, seeing as our
+RMSE of the price is around $350,000, so there is clearly room for improvement. 
+Perhaps we could regress all of the variables but using smaller data sets that 
+are defined by neighborhood, resulting in far smaller datasets but possibly a 
+more accurate model, if the neighborhoods are fairly homogeneous in price.
+
+Revision Additions:
+Best subset selection may seem like an unnecessary choice for running models with only four
+and six variables respectively, and we generally certainly agree. However, we began our analysis
+and code with the thinking that we would be using dozens of dummy variables representing the many
+categorical variables in our dataset. When that proved impossible to run, we already had our
+best subset code written out, and decided that for the sake of time it would not be possible to
+restart the entire section, and that the model would most likely just return a model with all
+predictors anyways.
+
+The results of our best subset model including binary dummy variables for the most and least
+expensive neighborhoods, Taman Duta and Chan Sow Lin, interestingly did not improve our model
+accuracy. Contrary to our initial assumptions, the model actually performed worse than the model
+that did not include any categorical variables. It is not entirely surprising that the least
+expensive neighborhood was not included as a predictor in the final four predictor model, given the fact
+that it was not the least expensive neighborhood by any large margin and so most likely did not indicate
+any particularly important general information for listings in the neighborhood. At first, it was surprising
+that including the Taman Duta variable did not increase the model accuracy, given that the neighborhood is
+so much more expensive than any other neighborhood in the dataset, but upon further reflection it actually
+seems very logical. The most likely explanation is that the Taman Duta neighborhood has a few incredibly
+expensive outliers that pull the average house value in the neighborhood much higher. Since the coefficient
+of the Taman Duta neighborhood predictor in our final model is such a large positive number, this most
+likely means that the model predicts any house in that neighborhood to have a very high listing price, when in reality only a few houses in the neighborhood have such high values, and the average is most likely much more normal. Given more time and computational power, it would be interesting to explore the inclusion of more neighborhood dummy variables, and whether or not they would be useful, as well as the property type.
